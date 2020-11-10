@@ -5,123 +5,86 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"time"
+	"strings"
+)
 
-	"github.com/hashicorp/raft"
-	"github.com/vision9527/raft-demo/fsm"
-	"github.com/vision9527/raft-demo/myraft"
+var (
+	curRaftConfig RaftConfig
+	curMyConfig MyConfig
 )
 
 /*
-./raft-demo --http_addr=172.23.0.1:7001 --raft_addr=172.23.0.1:7000 --raft_id=1 --raft_cluster=1/172.23.0.1:7000,2/172.23.0.1:8000,3/172.23.0.1:9000
-./raft-demo --http_addr=172.23.0.1:8001 --raft_addr=172.23.0.1:8000 --raft_id=2 --raft_cluster=1/172.23.0.1:7000,2/172.23.0.1:8000,3/172.23.0.1:9000
-./raft-demo --http_addr=172.23.0.1:9001 --raft_addr=172.23.0.1:9000 --raft_id=3 --raft_cluster=1/172.23.0.1:7000,2/172.23.0.1:8000,3/172.23.0.1:9000
+.\myraft.exe --http-addr='127.0.0.1:7000' --raft-addr='127.0.0.1:7001' --raft-id=1 --cluster-addr='1/127.0.0.1:7001,2/127.0.0.1:8001,3/127.0.0.1:9001'
+.\myraft.exe --http-addr='127.0.0.1:8000' --raft-addr='127.0.0.1:8001' --raft-id=2 --cluster-addr='1/127.0.0.1:7001,2/127.0.0.1:8001,3/127.0.0.1:9001'
+.\myraft.exe --http-addr='127.0.0.1:9000' --raft-addr='127.0.0.1:9001' --raft-id=3 --cluster-addr='1/127.0.0.1:7001,2/127.0.0.1:8001,3/127.0.0.1:9001'
 */
 
-var (
-	httpAddr    string
-	raftAddr    string
-	raftId      string
-	raftCluster string
-	raftDir     string
-)
+func init()  {
+	var httpAddr string
+	var raftAddr string
+	var raftID string
+	var clusterAddr string
+	flag.StringVar(&httpAddr, "http-addr", "127.0.0.1:7000", "http listen address")
+	flag.StringVar(&raftAddr, "raft-addr", "127.0.0.1:7001", "raft tcp address")
+	flag.StringVar(&raftID, "raft-id", "1", "raft server id")
+	flag.StringVar(&clusterAddr, "cluster-addr", "1/127.0.0.1:70001,2/127.0.0.1:8001,3/127.0.0.1:9001", "raft cluster address")
+	flag.Parse()
+	fmt.Printf("参数：http-addr=%s raft-addr=%s raft-id=%s cluster-addr=%s", httpAddr, raftAddr, raftID, clusterAddr)
+	curRaftConfig.HttpAddr = httpAddr
+	curRaftConfig.RaftAddr = raftAddr
+	curRaftConfig.RaftID = raftID
+	//dir, err := filepath.Abs(filepath.Dir(os.Args[0]))
+	//if err != nil {
+	//	panic(dir)
+	//}
+	dir := "node/raft_" + raftID
+	err := os.MkdirAll(dir, 0700)
+	if err != nil {
+		panic(err)
+	}
+	curRaftConfig.DataDir = dir
 
-var (
-	isLeader bool
-)
-
-func init() {
-	flag.StringVar(&httpAddr, "http_addr", "127.0.0.1:7001", "http listen addr")
-	flag.StringVar(&raftAddr, "raft_addr", "127.0.0.1:7000", "raft listen addr")
-	flag.StringVar(&raftId, "raft_id", "1", "raft id")
-	flag.StringVar(&raftCluster, "raft_cluster", "1/127.0.0.1:7000,2/127.0.0.1:8000,3/127.0.0.1:9000", "cluster info")
+	addrArray := strings.Split(clusterAddr, ",")
+	if len(addrArray) == 0 {
+		panic("don't set cluster address")
+	}
+	for _, addrInfo := range addrArray {
+		nodeAddr := strings.Split(addrInfo, "/")
+		raftConfig := RaftConfig{
+			RaftID: nodeAddr[0],
+			RaftAddr: nodeAddr[1],
+		}
+		curMyConfig.RaftConfig = append(curMyConfig.RaftConfig, raftConfig)
+	}
 }
 
-func main() {
-	flag.Parse()
-	// 初始化配置
-	if httpAddr == "" || raftAddr == "" || raftId == "" || raftCluster == "" {
-		fmt.Println("config error")
-		os.Exit(1)
-		return
-	}
-	raftDir := "node/raft_" + raftId
-	os.MkdirAll(raftDir, 0700)
-
+func main()  {
 	// 初始化raft
-	myRaft, fm, err := myraft.NewMyRaft(raftAddr, raftId, raftDir)
-	if err != nil {
-		fmt.Println("NewMyRaft error ", err)
-		os.Exit(1)
-		return
-	}
-
+	fmt.Println("初始化raft", curRaftConfig.RaftAddr, curRaftConfig.RaftID)
+	raftServer := NewRaftSever(&curRaftConfig)
 	// 启动raft
-	myraft.Bootstrap(myRaft, raftId, raftAddr, raftCluster)
+	fmt.Println("启动raft")
+	Bootstrap(raftServer, &curMyConfig)
 
-	// 监听leader变化
+	// 启动http
+	fmt.Println("启动http服务")
+	httpServer := NewHttpServer(raftServer)
+
 	go func() {
-		for leader := range myRaft.LeaderCh() {
-			isLeader = leader
+		for leader := range raftServer.Raft.LeaderCh() {
+			httpServer.SetWriteFlag(leader)
 		}
 	}()
 
-	// 启动http server
-	httpServer := HttpServer{
-		ctx: myRaft,
-		fsm: fm,
-	}
-
 	http.HandleFunc("/set", httpServer.Set)
 	http.HandleFunc("/get", httpServer.Get)
-	http.ListenAndServe(httpAddr, nil)
-
-	// 关闭raft
-	shutdownFuture := myRaft.Shutdown()
-	if err := shutdownFuture.Error(); err != nil {
-		fmt.Printf("shutdown raft error:%v \n", err)
+	if err := http.ListenAndServe(curRaftConfig.HttpAddr, nil); err != nil {
+		panic(err)
 	}
 
-	// 退出http server
-	fmt.Println("shutdown kv http server")
-}
-
-type HttpServer struct {
-	ctx *raft.Raft
-	fsm *fsm.Fsm
-}
-
-func (h HttpServer) Set(w http.ResponseWriter, r *http.Request) {
-	if !isLeader {
-		fmt.Fprintf(w, "not leader")
-		return
-	}
-	vars := r.URL.Query()
-	key := vars.Get("key")
-	value := vars.Get("value")
-	if key == "" || value == "" {
-		fmt.Fprintf(w, "error key or value")
-		return
-	}
-
-	data := "set" + "," + key + "," + value
-	future := h.ctx.Apply([]byte(data), 5*time.Second)
+	future := raftServer.Raft.Shutdown()
 	if err := future.Error(); err != nil {
-		fmt.Fprintf(w, "error:"+err.Error())
-		return
+		panic("shutdown raft error: " + err.Error())
 	}
-	fmt.Fprintf(w, "ok")
-	return
-}
-
-func (h HttpServer) Get(w http.ResponseWriter, r *http.Request) {
-	vars := r.URL.Query()
-	key := vars.Get("key")
-	if key == "" {
-		fmt.Fprintf(w, "error key")
-		return
-	}
-	value := h.fsm.Data[key]
-	fmt.Fprintf(w, value)
-	return
+	fmt.Println("shutdown raft server!")
 }
