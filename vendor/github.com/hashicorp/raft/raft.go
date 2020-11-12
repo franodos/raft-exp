@@ -441,6 +441,7 @@ func (r *Raft) runLeader() {
 	}()
 
 	// Start a replication routine for each peer
+	// Leader为每个对端(follower)开启一个replicate goroutine
 	r.startStopReplication()
 
 	// Dispatch a no-op log entry first. This gets this leader up to the latest
@@ -494,6 +495,7 @@ func (r *Raft) startStopReplication() {
 			}
 
 			r.leaderState.replState[server.ID] = s
+			// 开启复制replicate goutine
 			r.goFunc(func() { r.replicate(s) })
 			asyncNotifyCh(s.triggerCh)
 			r.observe(PeerObservation{Peer: server, Removed: false})
