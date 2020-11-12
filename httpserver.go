@@ -60,6 +60,7 @@ func (h *HttpServer) Set(w http.ResponseWriter, r *http.Request){
 		fmt.Fprintln(w, "data Marshal error: "+err.Error())
 		return
 	}
+	fmt.Printf("-----------开始写入: key = %s, value=%s\n", key, value)
 	future := h.RaftServer.Raft.Apply(logByte, 5*time.Second)
 	if err := future.Error(); err != nil {
 		fmt.Fprintln(w, "data apply error: " + err.Error())
