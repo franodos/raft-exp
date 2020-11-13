@@ -15,12 +15,15 @@ type commitment struct {
 	// notified when commitIndex increases
 	commitCh chan struct{}
 	// voter ID to log index: the server stores up through this log entry
+	// 保存了各个节点，已经追加成功的日志的最新索引
+	// matchIndexs 应该是保存着foller节点与leader完全匹配的日志的最大的索引
 	matchIndexes map[ServerID]uint64
 	// a quorum stores up through this log entry. monotonically increases.
 	commitIndex uint64
 	// the first index of this leader's term: this needs to be replicated to a
 	// majority of the cluster before this leader may mark anything committed
 	// (per Raft's commitment rule)
+	// leader 任期内的第一个索引，在进行任何提交之前这个值需要发送给集群的大多数成员
 	startIndex uint64
 }
 
@@ -72,6 +75,11 @@ func (c *commitment) getCommitIndex() uint64 {
 // leader has written the new entry or a follower has replied to an
 // AppendEntries RPC. The given server's disk agrees with this server's log up
 // through the given index.
+// match 一旦log entires被写入磁盘match就会被调用，不管leader是不已写入新的entry，或有follower 应答了一个
+// ApenndEntires RPC，
+// 参数matchIndex表示该索引的日志已经被写入磁盘，
+// 将该参数更新到c.machIndexes中，然后检查是否大多数节点都更新了该索引日志
+// 如果是，就通知提交
 func (c *commitment) match(server ServerID, matchIndex uint64) {
 	c.Lock()
 	defer c.Unlock()
@@ -100,6 +108,7 @@ func (c *commitment) recalculate() {
 	fmt.Println(">>>>c.commitIndex =", c.commitIndex)
 	fmt.Println(">>>>c.startIndex = ", c.startIndex)
 
+	// 有超过一半的节点appendEntries成功，那么就提交日志
 	if quorumMatchIndex > c.commitIndex && quorumMatchIndex >= c.startIndex {
 		c.commitIndex = quorumMatchIndex
 		asyncNotifyCh(c.commitCh)

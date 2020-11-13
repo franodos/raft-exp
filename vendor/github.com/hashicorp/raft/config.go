@@ -143,6 +143,7 @@ type Config struct {
 	// CommitTimeout controls the time without an Apply() operation
 	// before we heartbeat to ensure a timely commit. Due to random
 	// staggering, may be delayed as much as 2x this value.
+	// CommitTimeout 用于在心跳之前，且没有Apply操作时，能及时保证commit
 	CommitTimeout time.Duration
 
 	// MaxAppendEntries controls the maximum number of append entries

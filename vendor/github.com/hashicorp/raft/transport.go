@@ -105,6 +105,7 @@ type AppendPipeline interface {
 
 	// Consumer returns a channel that can be used to consume
 	// response futures when they are ready.
+	// 返回一个channel，从这个消费者可以读取response futures
 	Consumer() <-chan AppendFuture
 
 	// Close closes the pipeline and cancels all inflight RPCs

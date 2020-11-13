@@ -1110,6 +1110,7 @@ func (r *Raft) dispatchLogs(applyLogs []*logFuture) {
 	// Notify the replicators of the new log
 	for _, f := range r.leaderState.replState {
 		// 通知复制器有新的日志被追加
+		fmt.Println(">>> 发送追加日志通知")
 		asyncNotifyCh(f.triggerCh)
 	}
 }

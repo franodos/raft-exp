@@ -94,6 +94,7 @@ type followerReplication struct {
 
 	// stepDown is used to indicate to the leader that we
 	// should step down based on information from a follower.
+	// 提示leadder，根据来自follower的信息，节点应该卸任leader
 	stepDown chan struct{}
 
 	// allowPipeline is used to determine when to pipeline the AppendEntries RPCs.
@@ -150,6 +151,7 @@ func (r *Raft) replicate(s *followerReplication) {
 	r.goFunc(func() { r.heartbeat(s, stopHeartbeat) })
 
 RPC:
+	fmt.Println(">>>>> in replicate RPC\n")
 	shouldStop := false
 	for !shouldStop {
 		select {
@@ -177,10 +179,15 @@ RPC:
 		// raft commits stop flowing naturally. The actual heartbeats
 		// can't do this to keep them unblocked by disk IO on the
 		// follower. See https://github.com/hashicorp/raft/issues/282.
+		// 这不是心跳机制，但是能保证followers快速的知道leader的commit index（在raft 停止 更随的时候(如等待心跳的时间)）
+		// 实际的心跳不能保证不阻塞，例如follower正在进行磁盘IO
 		case <-randomTimeout(r.conf.CommitTimeout):
+			fmt.Println(">>>>> in replicate CommitTimeout")
 			lastLogIdx, _ := r.getLastLog()
 			shouldStop = r.replicateTo(s, lastLogIdx)
 		}
+
+		fmt.Println(">>> shouldStop = ", shouldStop)
 
 		// If things looks healthy, switch to pipeline mode
 		if !shouldStop && s.allowPipeline {
@@ -190,6 +197,7 @@ RPC:
 	return
 
 PIPELINE:
+	fmt.Println(">>>>> in replicate PIPELINE\n")
 	// Disable until re-enabled
 	s.allowPipeline = false
 
@@ -208,6 +216,7 @@ PIPELINE:
 // given last index.
 // If the follower log is behind, we take care to bring them up to date.
 // lastIndex: 最新的日志
+// bool类型默认为false
 func (r *Raft) replicateTo(s *followerReplication, lastIndex uint64) (shouldStop bool) {
 	// Create the base request
 	var req AppendEntriesRequest
@@ -231,34 +240,48 @@ START:
 		return
 	}
 
+	fmt.Printf(">>>> req = %+v\n", req)
+	if len(req.Entries) > 0 {
+		fmt.Printf(">>>> req entry = %+v\n", req.Entries[0])
+	}
+
 	// Make the RPC call
 	start = time.Now()
+	// 发送AppenDEntries RPC
 	if err := r.trans.AppendEntries(s.peer.ID, s.peer.Address, &req, &resp); err != nil {
 		r.logger.Error("failed to appendEntries to", "peer", s.peer, "error", err)
 		s.failures++
 		return
 	}
+	// 统计
 	appendStats(string(s.peer.ID), start, float32(len(req.Entries)))
 
 	// Check for a newer term, stop running
 	if resp.Term > req.Term {
+		// follower 响应的任期更新，当前节点需要卸任leader
 		r.handleStaleTerm(s)
 		return true
 	}
 
 	// Update the last contact
+	// 更新最新一次联系时间
 	s.setLastContact()
 
 	// Update s based on success
 	if resp.Success {
+		// 成功
 		// Update our replication state
+		// 更新relaction的状态，并检查是否需要提交日志(达到了大多数)
 		updateLastAppended(s, &req)
 
 		// Clear any failures, allow pipelining
 		s.failures = 0
 		s.allowPipeline = true
 	} else {
+		// 失败
+		// 重新设置s.nextIndex
 		atomic.StoreUint64(&s.nextIndex, max(min(s.nextIndex-1, resp.LastLog+1), 1))
+		// 不重试回退
 		if resp.NoRetryBackoff {
 			s.failures = 0
 		} else {
@@ -287,6 +310,7 @@ CHECK_MORE:
 
 	// SEND_SNAP is used when we fail to get a log, usually because the follower
 	// is too far behind, and we must ship a snapshot down instead
+	// 送快照
 SEND_SNAP:
 	if stop, err := r.sendLatestSnapshot(s); stop {
 		return true
@@ -445,6 +469,7 @@ func (r *Raft) pipelineReplicate(s *followerReplication) error {
 	finishCh := make(chan struct{})
 
 	// Start a dedicated decoder
+	// 开启一个pipelineDecode gorutine
 	r.goFunc(func() { r.pipelineDecode(s, pipeline, stopCh, finishCh) })
 
 	// Start pipeline sends at the last good nextIndex
@@ -474,6 +499,7 @@ SEND:
 			lastLogIdx, _ := r.getLastLog()
 			shouldStop = r.pipelineSend(s, pipeline, &nextIndex, lastLogIdx)
 		case <-randomTimeout(r.conf.CommitTimeout):
+			fmt.Println(">>> in pipelineReplicate CommitTimeout")
 			lastLogIdx, _ := r.getLastLog()
 			shouldStop = r.pipelineSend(s, pipeline, &nextIndex, lastLogIdx)
 		}
@@ -490,6 +516,7 @@ SEND:
 
 // pipelineSend is used to send data over a pipeline. It is a helper to
 // pipelineReplicate.
+// 通过pipeline发送数据
 func (r *Raft) pipelineSend(s *followerReplication, p AppendPipeline, nextIdx *uint64, lastIndex uint64) (shouldStop bool) {
 	// Create a new append request
 	req := new(AppendEntriesRequest)
@@ -498,6 +525,7 @@ func (r *Raft) pipelineSend(s *followerReplication, p AppendPipeline, nextIdx *u
 	}
 
 	// Pipeline the append entries
+	// 发送AppendEntries请求
 	if _, err := p.AppendEntries(req, new(AppendEntriesResponse)); err != nil {
 		r.logger.Error("failed to pipeline appendEntries", "peer", s.peer, "error", err)
 		return true
@@ -506,28 +534,34 @@ func (r *Raft) pipelineSend(s *followerReplication, p AppendPipeline, nextIdx *u
 	// Increase the next send log to avoid re-sending old logs
 	if n := len(req.Entries); n > 0 {
 		last := req.Entries[n-1]
+		fmt.Println(">>> piplineSend nextIndex = ", last.Index+1)
 		atomic.StoreUint64(nextIdx, last.Index+1)
 	}
 	return false
 }
 
 // pipelineDecode is used to decode the responses of pipelined requests.
+// pipelineDecode 被用于解码pipeline request的响应
 func (r *Raft) pipelineDecode(s *followerReplication, p AppendPipeline, stopCh, finishCh chan struct{}) {
 	defer close(finishCh)
 	respCh := p.Consumer()
 	for {
+		//fmt.Println(">>> in pipelineDecode")
 		select {
 		case ready := <-respCh:
 			req, resp := ready.Request(), ready.Response()
+			// 统计
 			appendStats(string(s.peer.ID), ready.Start(), float32(len(req.Entries)))
 
 			// Check for a newer term, stop running
+			// 检查是否响应更新的任期
 			if resp.Term > req.Term {
 				r.handleStaleTerm(s)
 				return
 			}
 
 			// Update the last contact
+			// 设置最新的联系时间
 			s.setLastContact()
 
 			// Abort pipeline if not successful
@@ -536,6 +570,8 @@ func (r *Raft) pipelineDecode(s *followerReplication, p AppendPipeline, stopCh, 
 			}
 
 			// Update our replication state
+			// 更新replication状态(主要是更新next)
+			fmt.Println(">>> in pipelineDecode updateLastAppennded")
 			updateLastAppended(s, req)
 		case <-stopCh:
 			return
@@ -614,15 +650,19 @@ func appendStats(peer string, start time.Time, logs float32) {
 }
 
 // handleStaleTerm is used when a follower indicates that we have a stale term.
+// follower有更新的任期，停止复制
 func (r *Raft) handleStaleTerm(s *followerReplication) {
 	r.logger.Error("peer has newer term, stopping replication", "peer", s.peer)
+	// 通知所有等待验证的future，当前节点已经不是leader
 	s.notifyAll(false) // No longer leader
+	// 通知卸任leader
 	asyncNotifyCh(s.stepDown)
 }
 
 // updateLastAppended is used to update follower replication state after a
 // successful AppendEntries RPC.
 // TODO: This isn't used during InstallSnapshot, but the code there is similar.
+// updateLastAppended 用于在一个成功的AppendEntries RPC响应之后，更新replication的状态
 func updateLastAppended(s *followerReplication, req *AppendEntriesRequest) {
 	// Mark any inflight logs as committed
 	if logs := req.Entries; len(logs) > 0 {
@@ -632,5 +672,6 @@ func updateLastAppended(s *followerReplication, req *AppendEntriesRequest) {
 	}
 
 	// Notify still leader
+	// 通知当前节点依然是leader
 	s.notifyAll(true)
 }
