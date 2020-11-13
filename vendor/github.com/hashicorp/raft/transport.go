@@ -101,6 +101,7 @@ type WithPeers interface {
 type AppendPipeline interface {
 	// AppendEntries is used to add another request to the pipeline.
 	// The send may block which is an effective form of back-pressure.
+	// pipeline发送AppedEntries，返回Append Future，所以是一个异步过程， 不会等到follower对ApenndEntries做出响应
 	AppendEntries(args *AppendEntriesRequest, resp *AppendEntriesResponse) (AppendFuture, error)
 
 	// Consumer returns a channel that can be used to consume

@@ -5,6 +5,7 @@ import (
 )
 
 // Observation is sent along the given channel to observers when an event occurs.
+// 观察到的情况，即观察到的事件
 type Observation struct {
 	// Raft holds the Raft instance generating the observation.
 	Raft *Raft
@@ -41,10 +42,13 @@ type Observer struct {
 	// numObserved and numDropped are performance counters for this observer.
 	// 64 bit types must be 64 bit aligned to use with atomic operations on
 	// 32 bit platforms, so keep them at the top of the struct.
+	// 已被观察这接收的事件数量
 	numObserved uint64
+	// 被丢弃的事件数量
 	numDropped  uint64
 
 	// channel receives observations.
+	// channel 用来接收事件
 	channel chan Observation
 
 	// blocking, if true, will cause Raft to block when sending an observation

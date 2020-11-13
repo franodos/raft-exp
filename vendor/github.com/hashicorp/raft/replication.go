@@ -40,7 +40,8 @@ type followerReplication struct {
 
 	// nextIndex is the index of the next log entry to send to the follower,
 	// which may fall past the end of the log.
-	// nextIndex是发送给follwer的下一个日志的索引
+	// nextIndex是下一个需要发送给follower的日志的索引(或许表述为当前需要需要发送给follower的日志的索引更合适，可能是英文习惯，
+	// previous和next，这两之间没有当前)，用nextIndex来获取发送给follower的log entry的前一个日志的index，即nextIndex-1
 	nextIndex uint64
 
 	// peer contains the network address and ID of the remote follower.
@@ -59,6 +60,7 @@ type followerReplication struct {
 	// index; replication should be attempted with a best effort up through that
 	// index, before exiting.
 	// stopCh 在leader卸任或follower被移出集群是被通知或关闭
+	// 如果follower 被移出集群，stopCh将传输一个index，在退出之前，replication应该尝试经最大努力去复制这个index
 	stopCh chan uint64
 
 	// triggerCh is notified every time new entries are appended to the log.
@@ -190,6 +192,7 @@ RPC:
 		fmt.Println(">>> shouldStop = ", shouldStop)
 
 		// If things looks healthy, switch to pipeline mode
+		// 如果允许转到pipeline模式
 		if !shouldStop && s.allowPipeline {
 			goto PIPELINE
 		}
@@ -204,6 +207,7 @@ PIPELINE:
 	// Replicates using a pipeline for high performance. This method
 	// is not able to gracefully recover from errors, and so we fall back
 	// to standard mode on failure.
+	// 使用pipeline模式，如果pipeline失败了，退回到标准模式
 	if err := r.pipelineReplicate(s); err != nil {
 		if err != ErrPipelineReplicationNotSupported {
 			r.logger.Error("failed to start pipeline replication to", "peer", s.peer, "error", err)
@@ -454,6 +458,7 @@ func (r *Raft) heartbeat(s *followerReplication, stopCh chan struct{}) {
 // back to the standard replication which can handle more complex situations.
 func (r *Raft) pipelineReplicate(s *followerReplication) error {
 	// Create a new pipeline
+	fmt.Println(">>> 使用pipeline模式")
 	pipeline, err := r.trans.AppendEntriesPipeline(s.peer.ID, s.peer.Address)
 	if err != nil {
 		return err
@@ -469,10 +474,12 @@ func (r *Raft) pipelineReplicate(s *followerReplication) error {
 	finishCh := make(chan struct{})
 
 	// Start a dedicated decoder
-	// 开启一个pipelineDecode gorutine
+	// 开启一个pipelineDecode gorutine，用来接收和处理AppendEntries RPC的响应
 	r.goFunc(func() { r.pipelineDecode(s, pipeline, stopCh, finishCh) })
 
 	// Start pipeline sends at the last good nextIndex
+	// 这next 会一直被pipline 使用
+	// 用来持续发送AppendEntries请求(不需要等待响应再发送给下一个请求)
 	nextIndex := atomic.LoadUint64(&s.nextIndex)
 
 	shouldStop := false
@@ -496,10 +503,11 @@ SEND:
 				deferErr.respond(fmt.Errorf("replication failed"))
 			}
 		case <-s.triggerCh:
+			fmt.Printf(">>> 在pipeplie模式收到log entry serverID = %v\n", s.peer.ID)
 			lastLogIdx, _ := r.getLastLog()
 			shouldStop = r.pipelineSend(s, pipeline, &nextIndex, lastLogIdx)
 		case <-randomTimeout(r.conf.CommitTimeout):
-			fmt.Println(">>> in pipelineReplicate CommitTimeout")
+			//fmt.Println(">>> in pipelineReplicate CommitTimeout")
 			lastLogIdx, _ := r.getLastLog()
 			shouldStop = r.pipelineSend(s, pipeline, &nextIndex, lastLogIdx)
 		}
@@ -525,7 +533,9 @@ func (r *Raft) pipelineSend(s *followerReplication, p AppendPipeline, nextIdx *u
 	}
 
 	// Pipeline the append entries
-	// 发送AppendEntries请求
+	// pipline 发送AppendEntries请求，不会等待AppendEntries响应，
+	// 所以在pipline中需要一个单独的nextIdx，不能等待pipelineDecode gorutine 获取到 AppendEntriesResponse，更新replication的nextIndex
+	// 之后再去读该replication的nextIndex，这样就失去了pipeline的意义
 	if _, err := p.AppendEntries(req, new(AppendEntriesResponse)); err != nil {
 		r.logger.Error("failed to pipeline appendEntries", "peer", s.peer, "error", err)
 		return true
@@ -571,7 +581,7 @@ func (r *Raft) pipelineDecode(s *followerReplication, p AppendPipeline, stopCh, 
 
 			// Update our replication state
 			// 更新replication状态(主要是更新next)
-			fmt.Println(">>> in pipelineDecode updateLastAppennded")
+			//fmt.Println(">>> in pipelineDecode updateLastAppennded")
 			updateLastAppended(s, req)
 		case <-stopCh:
 			return
@@ -668,6 +678,8 @@ func updateLastAppended(s *followerReplication, req *AppendEntriesRequest) {
 	if logs := req.Entries; len(logs) > 0 {
 		last := logs[len(logs)-1]
 		atomic.StoreUint64(&s.nextIndex, last.Index+1)
+		// 日志提交
+		fmt.Printf(">>>检查提交日志 index = %v\n", last.Index)
 		s.commitment.match(s.peer.ID, last.Index)
 	}
 

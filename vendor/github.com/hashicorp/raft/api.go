@@ -182,6 +182,7 @@ type Raft struct {
 
 	// List of observers and the mutex that protects them. The observers list
 	// is indexed by an artificial ID which is used for deregistration.
+	// 观察者列表
 	observersLock sync.RWMutex
 	observers     map[uint64]*Observer
 
@@ -664,6 +665,7 @@ func (r *Raft) Leader() ServerAddress {
 // An optional timeout can be provided to limit the amount of time we wait
 // for the command to be started. This must be run on the leader or it
 // will fail.
+// Apply用来将command写入FSM
 func (r *Raft) Apply(cmd []byte, timeout time.Duration) ApplyFuture {
 	return r.ApplyLog(Log{Data: cmd}, timeout)
 }

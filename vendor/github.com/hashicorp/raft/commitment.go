@@ -104,12 +104,13 @@ func (c *commitment) recalculate() {
 	sort.Sort(uint64Slice(matched))
 	quorumMatchIndex := matched[(len(matched)-1)/2]
 
-	fmt.Println(">>>>quorumMatchIndex = ", quorumMatchIndex)
+	fmt.Printf(">>>>quorumMatchIndex = %v xiabiao=%v\n", quorumMatchIndex, (len(matched)-1)/2)
 	fmt.Println(">>>>c.commitIndex =", c.commitIndex)
 	fmt.Println(">>>>c.startIndex = ", c.startIndex)
 
 	// 有超过一半的节点appendEntries成功，那么就提交日志
 	if quorumMatchIndex > c.commitIndex && quorumMatchIndex >= c.startIndex {
+		fmt.Printf(">>>通知提交 index = %v\n", quorumMatchIndex)
 		c.commitIndex = quorumMatchIndex
 		asyncNotifyCh(c.commitCh)
 	}

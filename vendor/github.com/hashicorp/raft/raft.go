@@ -470,6 +470,7 @@ func (r *Raft) startStopReplication() {
 	lastIdx := r.getLastIndex()
 
 	// Start replication goroutines that need starting
+	// 为远程节点创建replication
 	for _, server := range r.configurations.latest.Servers {
 		if server.ID == r.localID {
 			continue
@@ -477,7 +478,9 @@ func (r *Raft) startStopReplication() {
 
 		inConfig[server.ID] = true
 
+		// 检查远程follower是否已经存在replciation
 		s, ok := r.leaderState.replState[server.ID]
+		// 不存在，为远程follower创建
 		if !ok {
 			r.logger.Info("added peer, starting replication", "peer", server.ID)
 			s = &followerReplication{
@@ -500,12 +503,14 @@ func (r *Raft) startStopReplication() {
 			asyncNotifyCh(s.triggerCh)
 			r.observe(PeerObservation{Peer: server, Removed: false})
 		} else if ok && s.peer.Address != server.Address {
+			// 检查地址
 			r.logger.Info("updating peer", "peer", server.ID)
 			s.peer = server
 		}
 	}
 
 	// Stop replication goroutines that need stopping
+	// 如果replication 的 serverID 不在 集群配置之中，关闭其replication
 	for serverID, repl := range r.leaderState.replState {
 		if inConfig[serverID] {
 			continue
@@ -745,12 +750,14 @@ func (r *Raft) leaderLoop() {
 			b.respond(ErrCantBootstrap)
 
 		case newLog := <-r.applyCh:
+			fmt.Printf(">>>收到新的log index=%d  term = %d\n", newLog.log.Index, newLog.log.Term)
 			if r.getLeadershipTransferInProgress() {
 				r.logger.Debug(ErrLeadershipTransferInProgress.Error())
 				newLog.respond(ErrLeadershipTransferInProgress)
 				continue
 			}
 			// Group commit, gather all the ready commits
+			// 如果有多个log，全部接收，组成一组
 			ready := []*logFuture{newLog}
 		GROUP_COMMIT_LOOP:
 			for i := 0; i < r.conf.MaxAppendEntries; i++ {
@@ -763,6 +770,7 @@ func (r *Raft) leaderLoop() {
 			}
 
 			// Dispatch the logs
+			// 分发日志
 			fmt.Printf(">>>ready=%+v\n", ready)
 			if stepDown {
 				// we're in the process of stepping down as leader, don't process anything new
@@ -1068,6 +1076,7 @@ func (r *Raft) appendConfigurationEntry(future *configurationChangeFuture) {
 
 // dispatchLog is called on the leader to push a log to disk, mark it
 // as inflight and begin replication of it.
+// dispathcLog 接收一组日志(日志还没分配index和term)
 func (r *Raft) dispatchLogs(applyLogs []*logFuture) {
 	now := time.Now()
 	defer metrics.MeasureSince([]string{"raft", "leader", "dispatchLog"}, now)
@@ -1101,6 +1110,7 @@ func (r *Raft) dispatchLogs(applyLogs []*logFuture) {
 		r.setState(Follower)
 		return
 	}
+	// 检查lastIndex是否可被提交，如果是就提交
 	r.leaderState.commitment.match(r.localID, lastIndex)
 
 	// Update the last log since it's on disk now
